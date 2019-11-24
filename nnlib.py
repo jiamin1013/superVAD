@@ -72,7 +72,24 @@ def pad_collate_conv(batch):
     (xx,yy) = zip(*batch)
     x_lens = [len(x) for x in xx]
     y_lens = [len(y) for y in yy]
-    return
+    xx_new,yy_new = [],[]
+    for i in range(len(xx)):
+        x_conv,y_conv = pad_convseq((xx[i],yy[i]))
+        xx_new.append(x_conv)
+        yy_new.append(y_conv)
+    xx_pad = pad_sequence(tuple(xx_new),batch_first=True,padding_value=0)
+    yy_pad = pad_sequence(tuple(yy_new),batch_first=True,padding_value=-100)
+    return xx_pad, yy_pad, x_lens, y_lens
+
+def pad_convseq(seqs):
+    xx,yy = seqs
+    stride, kernel_size = 32, 64 #change with hyperparam
+    num_pad = get_num_pads(len(xx),stride,kernel_size)
+    xpad = torch.tensor((),dtype=xx.dtype).new_full((num_pad,xx.size()[1]),0)
+    ypad = torch.tensor((),dtype=yy.dtype).new_full((num_pad,),-100)
+    xx = torch.cat([xx,xpad],dim=0)
+    yy = torch.cat([yy,ypad],dim=0)
+    return xx , yy
 
 def get_num_pads(L,stride,kernel_size):
     L,s,ksz = [int(x) for x in (L,stride,kernel_size)]
@@ -115,7 +132,7 @@ def model_train_seq(device,niter,optimizer,criterion,model,dataloaders,name="lst
             model.train() #set train mode
             optimizer.zero_grad()
             yypad,_ = model((xseq,xlen))
-            #swap the seq_len(2) and num_class(1) dims and keep batch(0) dim
+            #yyseq should have (batch,class,seq) after permute
             yyseq = yypad.permute((0,2,1)).contiguous()
             running_loss = criterion(yyseq,yseq)
             running_loss.backward()
@@ -126,9 +143,9 @@ def model_train_seq(device,niter,optimizer,criterion,model,dataloaders,name="lst
         print("epoch: {0}, training loss: {1:1.4f}".format(epoch,loss_avg))
         #save model and check validation each 100 epoch
         if (epoch+1)%100 == 0:
-            model_eval_seq(model,devloader,criterion,mode="Validation")
             model_path = "results/rnn_params/tmp/{0}".format(name)
             torch.save(model.state_dict(),model_path)
+            model_eval_seq(device,model,devloader,criterion,mode="Validation")
     torch.save(model.state_dict(),"results/rnn_params/{0}".format(name))
     print("Training finished, model {0} is saved".format(name))
     return model
@@ -144,6 +161,7 @@ def model_eval_seq(device,model,loader,criterion,mode="Validation"):
         yseq = yseq.to(device=device)
         model.eval() #set eval mode
         yypad,_ = model((xseq,xlen))
+        #yyseq should have (batch,class,seq) after permute
         yyseq = yypad.permute((0,2,1)).contiguous()
         loss_sum += criterion(yyseq,yseq).item()
         #loop batch
@@ -181,7 +199,8 @@ class LSTMNet(nn.Module):
         self.dim_input = dim_input
         self.dim_output = dim_output
         self.dim_hidden = dim_hidden
-        self.i2h = nn.LSTM(self.dim_input,self.dim_hidden,num_layers=num_layers)
+        self.i2h = nn.LSTM(self.dim_input,self.dim_hidden,batch_first=True,
+                           num_layers=num_layers)
         self.logits_fc = nn.Linear(self.dim_hidden,self.dim_output)
 
     def forward(self,xx,hidden=None):
@@ -198,27 +217,34 @@ class LSTMNet(nn.Module):
         return torch.zeros(1,self.dim_hidden)
 
 class ConvLSTM(nn.Module):
-    def __init__(self,dim_input,dim_output,dim_hidden):
+    def __init__(self,dim_input,dim_output):
         super(ConvLSTM,self).__init__()
         self.dim_input = dim_input
         self.dim_output = dim_output
-        self.dim_hidden = dim_hidden
         self.conv1d = nn.Conv1d(in_channels=dim_input,out_channels=128,
-                                kernel_size=64,stride=1,padding=0)
-        self.lstm = nn.LSTM(128,128,num_layers=1)
+                                kernel_size=64,stride=32,padding=0)
+        self.lstm = nn.LSTM(128,128,batch_first=True,num_layers=1)
         self.convT1d = nn.ConvTranspose1d(in_channels=128,out_channels=64,
-                                kernel_size=64,stride=1,padding=0)
+                                kernel_size=64,stride=32,padding=0)
         self.affine = nn.Linear(64,32)
-        self.logits_fc = nn.Linear(32,dim_output)
+        self.logits = nn.Linear(32,dim_output)
 
-    def forward(self,x,hidden=None):
-        packed_out,last_hidden = self.i2h(x,hidden)
-        padded_out,_ = pad_packed_sequence(packed_out,batch_first=True,padding_value=0.0)
-        padded_output = self.logits_fc(padded_out)
-        return padded_output,last_hidden
-
-    def initHidden(self):
-        return torch.zeros(1,self.dim_hidden)
+    def forward(self,xx,hidden=None):
+        xseq,xlen = xx #xseq is padded sequence
+        #xseq should have (N,Cin,L) after permute
+        xseq = xseq.permute((0,2,1)).contiguous()
+        xseq_conv = self.conv1d(xseq)
+        #xseq_conv should have (batch,seq,feature) after permute
+        xseq_conv = xseq_conv.permute((0,2,1)).contiguous()
+        seq_hid,last_hidden = self.lstm(xseq_conv,hidden)
+        #seq_hid should have (N,Cin,L) after permute
+        seq_hid = seq_hid.permute((0,2,1)).contiguous()
+        seq_deconv = self.convT1d(seq_hid)
+        #seq_deconv should have (N,*,Hin) after permute
+        seq_deconv = seq_deconv.permute((0,2,1)).contiguous()
+        seq_aff = self.affine(seq_deconv)
+        padded_y = self.logits(seq_aff)
+        return padded_y,last_hidden
 
 #misc
 

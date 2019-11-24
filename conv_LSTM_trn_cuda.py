@@ -4,11 +4,8 @@
 # --- imports ---
 import sys
 import pdb
-import torch
 import random
 import argparse
-import numpy as np
-import torch.nn as nn
 import torch.optim as optim
 import kaldi_io as kio
 from mylib import *
@@ -49,13 +46,13 @@ def main_init():
 
 class hyperparam():
     def __init__(self,lr,niter):
-        self.din = 13
+        self.din = 13 #TODO, change hyperparam when needed
         self.dout = 2
         self.dhid = 12
         self.lstmlyr = 2
-        self.lr = lr
+        self.lr = 0.001
         self.bsize = 10
-        self.niter = niter
+        self.niter = 500
 
 def main():
     #set seeds
@@ -72,19 +69,21 @@ def main():
     global_mean = np.mean(np.load("pyprep/train/train_all_mfcc.npy"),
                           axis=0,keepdims=True) if args.norm else 0
     hp = hyperparam(args.lr,args.niter)
-    model_name = "run3_ly{0}_ep{1}_lr{2}_h{3}_lstm".format(hp.lstmlyr,hp.niter,hp.lr,hp.dhid)
+#    model_name = "run0_ly{0}_ep{1}_lr{2}_h{3}_convlstm".format(hp.lstmlyr,hp.niter,hp.lr,hp.dhid)
+    model_name = "run0_ly{0}_ep{1}_lr{2}_convlstm".format(hp.lstmlyr,hp.niter,hp.lr)
     #preprocess, datasets and dataloader
     data = main_init()
     datasets = data_load_datasets(data,global_mean)
-    trnldr,devldr,tstldr = data_define_dataloader(datasets,hp.bsize,pad_collate)
+    trnldr,devldr,tstldr = data_define_dataloader(datasets,hp.bsize,pad_collate_conv)
     #configure nn models
-    lstm = LSTMNet(hp.din,hp.dout,hp.dhid,hp.lstmlyr).to(device=device)
+#    lstm = LSTMNet(hp.din,hp.dout,hp.dhid,hp.lstmlyr).to(device=device)
+    lstm = ConvLSTM(hp.din,hp.dout).to(device=device)
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
     optimizer = optim.SGD(lstm.parameters(),lr=hp.lr,momentum=0.9)
     #load previous trained progress
 #    lstm.load_state_dict(torch.load("results/rnn_params/run2_ly2_ep500_lr0.001_h12_lstm"))
     #Test
-    lstm = model_train_seq(device,niter,optimizer,criterion,lstm,
+    lstm = model_train_seq(device,hp.niter,optimizer,criterion,lstm,
                            (trnldr,devldr),name=model_name)
     model_eval_seq(device,lstm,tstldr,criterion,mode="Evaluation")
 
