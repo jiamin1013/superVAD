@@ -246,5 +246,24 @@ class ConvLSTM(nn.Module):
         padded_y = self.logits(seq_aff)
         return padded_y,last_hidden
 
+
+class transformer(nn.Module):
+    def __init__(self,d_model=512,nhead=8,nstack=6,d_ff=2048,dropout=0.1):
+        super(transformer,self).__init__()
+        self.dim_input = dim_input
+        self.dim_output = dim_output
+        self.transformer = nn.Transformer(d_model=d_model,nhead=nhead,
+            num_encoder_layers=nstack, num_decoder_layers=nstack,
+            dim_feedforward=d_ff,dropout=dropout) #TODO: we use default parameters so far
+    def forward(self,src,tgt,src_mask=None, tgt_mask=None,
+                memory_mask=None, src_key_padding_mask=None,
+                tgt_key_padding_mask=None, memory_key_padding_mask=None):
+        return self.transformer(src,tgt,src_mask,tgt_mask,memory_mask,
+                                src_key_padding_mask,tgt_key_padding_mask,
+                                memory_key_padding_mask)
+    #TODO: Need to think about what is the target sequence(***)
+    #Should we include a <BOS> <EOS> token?
+    #Think about how to modify last layer instead of a vocab size
+
 #misc
 
