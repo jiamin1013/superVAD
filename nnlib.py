@@ -150,7 +150,7 @@ def model_train_seq(device,niter,optimizer,criterion,model,dataloaders,name="lst
     print("Training finished, model {0} is saved".format(name))
     return model
 
-def model_eval_seq(device,model,loader,criterion,mode="Validation"):
+def model_eval_seq(device,model,loader,criterion,mode="Validation",s=None):
     device = next(model.parameters()).device
     sftmax = nn.Softmax(dim=0)
     loss_sum,ya,yya = 0,[],[]
@@ -173,7 +173,8 @@ def model_eval_seq(device,model,loader,criterion,mode="Validation"):
             ya.append(y); yya.append(yy)
     ya = 1-torch.cat(ya,dim=0).cpu().detach().numpy()
     yya = torch.cat(yya,dim=0).cpu().detach().numpy()
-    #np.save("results/val_run2_ly2_ep500",(yya,ya))
+    if s:
+        np.save("results/roc/{0}".format(s),(yya,ya))
     fpr,tpr,thresholds = roc_curve(ya,yya)
     optix = np.absolute(tpr-(1-fpr)-0).argsort()[0]
     roc_auc = auc(fpr,tpr)
@@ -194,14 +195,15 @@ def cal_diff(yy,y):
 # -------- neural networks -----------
 
 class LSTMNet(nn.Module):
-    def __init__(self,dim_input,dim_output,dim_hidden,num_layers=1):
+    def __init__(self,dim_input,dim_output,dim_hidden,num_layers=1,bidirect=False):
         super(LSTMNet,self).__init__()
         self.dim_input = dim_input
         self.dim_output = dim_output
         self.dim_hidden = dim_hidden
+        self.num_direction = 2 if bidirect else 1
         self.i2h = nn.LSTM(self.dim_input,self.dim_hidden,batch_first=True,
-                           num_layers=num_layers)
-        self.logits_fc = nn.Linear(self.dim_hidden,self.dim_output)
+                           num_layers=num_layers,bidirectional=bidirect)
+        self.logits_fc = nn.Linear(self.dim_hidden*self.num_direction,self.dim_output)
 
     def forward(self,xx,hidden=None):
         xseq,xlen = xx
@@ -217,16 +219,18 @@ class LSTMNet(nn.Module):
         return torch.zeros(1,self.dim_hidden)
 
 class ConvLSTM(nn.Module):
-    def __init__(self,dim_input,dim_output):
+    def __init__(self,dim_input,dim_output,num_layers,bidirect):
         super(ConvLSTM,self).__init__()
         self.dim_input = dim_input
         self.dim_output = dim_output
+        self.num_direction = 2 if bidirect else 1
         self.conv1d = nn.Conv1d(in_channels=dim_input,out_channels=128,
                                 kernel_size=64,stride=32,padding=0)
-        self.lstm = nn.LSTM(128,128,batch_first=True,num_layers=1)
-        self.convT1d = nn.ConvTranspose1d(in_channels=128,out_channels=64,
-                                kernel_size=64,stride=32,padding=0)
+        self.lstm = nn.LSTM(128,128,batch_first=True,num_layers=num_layers,
+                            bidirectional=bidirect)
+        self.convT1d = nn.ConvTranspose1d(in_channels=128*self.num_direction,out_channels=64,kernel_size=64,stride=32,padding=0)
         self.affine = nn.Linear(64,32)
+        self.dropout = nn.Dropout(p=0.5)
         self.logits = nn.Linear(32,dim_output)
 
     def forward(self,xx,hidden=None):
@@ -241,10 +245,10 @@ class ConvLSTM(nn.Module):
         seq_hid = seq_hid.permute((0,2,1)).contiguous()
         seq_deconv = self.convT1d(seq_hid)
         #seq_deconv should have (N,*,Hin) after permute
-        seq_deconv = seq_deconv.permute((0,2,1)).contiguous()
+        seq_deconv = self.dropout(seq_deconv.permute((0,2,1)).contiguous())
         seq_aff = self.affine(seq_deconv)
         padded_y = self.logits(seq_aff)
         return padded_y,last_hidden
-
+        #TODO: remove lstm layers, do lstm 2lyrs 
 #misc
 
