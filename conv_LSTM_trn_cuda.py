@@ -4,6 +4,7 @@
 # --- imports ---
 import sys
 import pdb
+import time
 import random
 import argparse
 import torch.optim as optim
@@ -32,8 +33,13 @@ def get_args():
                         help="""learning rate""")
     parser.add_argument("--niter", type=int, default=100,
                         help="""epoch number""")
+    parser.add_argument("--lstmlyr", type=int, default=1)
+    parser.add_argument("--bidirect", type=str2bool, default=False)
     parser.add_argument("--disable_cuda",type=str2bool,default=True,
                         help = """disable using GPU""")
+    parser.add_argument("--model",type=str,default=None)
+    parser.add_argument("--exp",type=str,default="0") #experiment number
+
     args = parser.parse_args()
     return args
 
@@ -45,14 +51,16 @@ def main_init():
     return trn_utts,dev_utts,tst_utts
 
 class hyperparam():
-    def __init__(self,lr,niter):
+    def __init__(self,lr,niter,lstmlyr,bidirect):
         self.din = 13 #TODO, change hyperparam when needed
         self.dout = 2
         self.dhid = 12
-        self.lstmlyr = 2
+        self.lstmlyr = lstmlyr
+        self.bidirect = bidirect
         self.lr = 0.001
         self.bsize = 10
-        self.niter = 500
+        self.niter = niter
+        self.bidi = "bi" if bidirect else ""
 
 def main():
     #set seeds
@@ -68,24 +76,33 @@ def main():
     #setup hyperparameters 
     global_mean = np.mean(np.load("pyprep/train/train_all_mfcc.npy"),
                           axis=0,keepdims=True) if args.norm else 0
-    hp = hyperparam(args.lr,args.niter)
-#    model_name = "run0_ly{0}_ep{1}_lr{2}_h{3}_convlstm".format(hp.lstmlyr,hp.niter,hp.lr,hp.dhid)
-    model_name = "run0_ly{0}_ep{1}_lr{2}_convlstm".format(hp.lstmlyr,hp.niter,hp.lr)
+    hp = hyperparam(args.lr,args.niter,args.lstmlyr,args.bidirect)
     #preprocess, datasets and dataloader
     data = main_init()
     datasets = data_load_datasets(data,global_mean)
-    trnldr,devldr,tstldr = data_define_dataloader(datasets,hp.bsize,pad_collate_conv)
     #configure nn models
-#    lstm = LSTMNet(hp.din,hp.dout,hp.dhid,hp.lstmlyr).to(device=device)
-    lstm = ConvLSTM(hp.din,hp.dout).to(device=device)
+#   Conv-LSTM
+    trnldr,devldr,tstldr = data_define_dataloader(datasets,hp.bsize,pad_collate_conv)
+    model_name = "run{0}_ly{1}_ep{2}_lr{3}_conv{4}lstm".format(args.exp,
+                                hp.lstmlyr,hp.niter,hp.lr,hp.bidi)
+    lstm = ConvLSTM(hp.din,hp.dout,hp.lstmlyr,hp.bidirect).to(device=device)
+
+#   LSTM
+#    trnldr,devldr,tstldr = data_define_dataloader(datasets,hp.bsize,pad_collate)
+#    model_name = "run0_ly{0}_ep{1}_lr{2}_h{3}_{4}lstm".format(hp.lstmlyr,hp.niter,hp.lr,hp.dhid,hp.bidi)
+#    lstm = LSTMNet(hp.din,hp.dout,hp.dhid,hp.lstmlyr,hp.bidirect).to(device=device)
+
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
     optimizer = optim.SGD(lstm.parameters(),lr=hp.lr,momentum=0.9)
     #load previous trained progress
-#    lstm.load_state_dict(torch.load("results/rnn_params/run2_ly2_ep500_lr0.001_h12_lstm"))
-    #Test
+    if args.model:
+        lstm.load_state_dict(torch.load("results/rnn_params/tmp/{0}".format(args.model), map_location=device))
+        #lstm.load_state_dict(torch.load("results/rnn_params/{0}".format(model_name), map_location=device))
+    #Train and test
+    print(model_name)
     lstm = model_train_seq(device,hp.niter,optimizer,criterion,lstm,
                            (trnldr,devldr),name=model_name)
-    model_eval_seq(device,lstm,tstldr,criterion,mode="Evaluation")
+    model_eval_seq(device,lstm,tstldr,criterion,mode="Evaluation",s=model_name)
 
 if __name__=="__main__":
     main()
