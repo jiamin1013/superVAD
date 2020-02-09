@@ -35,9 +35,10 @@ class mfccDataset(utils.Dataset):
 
     def __getitem__(self,idx):
         reco = self.reco_list[idx]
-        feat = np.load("pyprep/{0}/{1}_mfcc.npy".format(self.mode,reco))-self.miu
+        #TODO:limit maxseq lenghth 300 for now
+        feat = np.load("pyprep/{0}/{1}_mfcc.npy".format(self.mode,reco))[:300,:]-self.miu
         feat = torch.from_numpy(feat)
-        lbl = np.load("pyprep/{0}/{1}_lbl.npy".format(self.mode,reco)).squeeze()
+        lbl = np.load("pyprep/{0}/{1}_lbl.npy".format(self.mode,reco)).squeeze()[:300]
         lbl = torch.as_tensor(1-lbl,dtype=torch.long)
         return feat,lbl
 
@@ -67,6 +68,29 @@ def pad_collate(batch):
     xx_pad = pad_sequence(xx,batch_first=True,padding_value=0)
     yy_pad = pad_sequence(yy,batch_first=True,padding_value=-100)
     return xx_pad,yy_pad,x_lens,y_lens
+
+def pad_collate_tx(batch):
+    #batch is [(seq1,lbl1),(seq2,lbl2),...(seqN,lblN)], N is batch size.
+    (xx,yy) = zip(*batch)
+    x_lens = [len(x) for x in xx]
+    y_lens = [len(y) for y in yy]
+    #padded sequence is T*B*x, T is longest sequence, x is featdim
+    xx_pad = pad_sequence(xx,batch_first=False,padding_value=0)
+    yy_pad = pad_sequence(yy,batch_first=False,padding_value=-100)
+    #process data to avoid processing while training the model 
+    x_pad_mask = generate_padding_mask(x_lens)
+    y_pad_mask = generate_padding_mask(y_lens) if x_lens != y_lens else x_pad_mask
+    return xx_pad,yy_pad,x_lens,y_lens,x_pad_mask,y_pad_mask
+
+def generate_padding_mask(seqlens):
+    #seqlens is [seq1len,seq2len,seq3len,...,seqNlen], N is batch size.
+    bsize = len(seqlens)
+    seqL = max(seqlens)
+    #mask with True value will be masked, dtype=byteTensor, (batch,seqL)
+    mask = torch.empty(bsize,seqL).fill_(False).byte()
+    for bidx in range(bsize): 
+        mask[bidx,seqlens[bidx]:] = True #mask padded elements
+    return mask
 
 def pad_collate_conv(batch):
     (xx,yy) = zip(*batch)
@@ -117,7 +141,47 @@ def read_recolist(filename):
     return recos
 
 # -------- Training --------
+#Training transformer
+def model_train_attn(device,niter,optimizer,criterion,model,dataloaders,name="tx_model"):
+    trainloader, devloader = dataloaders
+    print("Training TX ...")
+    losses = []
+    for epoch in range(niter):
+        print(epoch)
+        loss_sum = 0
+        for data in trainloader:
+            running_loss = 0
+            xseq,yseq,xlen,ylen,xpad_mask,ypad_mask = data
+            xseq.to(device=device)
+            yseq.to(device=device)
+            square_mask = model.generate_square_subsequent_mask(yseq.size()[0])
+            #src: xseq, tgt: yseq (seqL,bsize,embedsz)
+            model.train() #set train mode
+            optimizer.zero_grad()
+            #TODO: Pad yseq with bos, Convolution layer before transformer
+            yypad = model(xseq,yseq,src_mask=None,tgt_mask=square_mask,memory_mask=None,src_key_padding_mask=xpad_mask,tgt_key_padding_mask=ypad_mask,memory_key_padding_mask=None)
+            #permute yypad to have (batch,class,seqL) because KLDivLoss is batch first
+            yyseq = yypad.permute(1,2,0).contiguous()
+            running_loss = criterion(yyseq,yseq,ypad_mask)/ypad_mask.size(1)
+            running_loss.backward()
+            optimizer.step()
+            print("running loss per batch: {0}".format(running_loss))
+            loss_sum += running_loss.item()
+        loss_avg = loss_sum/len(trainloader)
+        losses.append(loss_avg)
+        print("epoch: {0}, training loss: {1:1.4f}".format(epoch,loss_avg))
+        #save model and check validation each 100 epoch
+        if (epoch+1)%101 == 0:
+            #TODO: save model properly, and write model eval function
+            model_path = "results/rnn_params/tmp/{0}".format(name)
+            torch.save(model.state_dict(),model_path)
+            #validate
+            model_eval_attn(device,model,devloader,criterion,mode="Validation")
+    #torch.save(model.state_dict(),"results/rnn_params/{0}".format(name))
+    #print("Training finished, model {0} is saved".format(name))
+    return model,losses
 
+#Training RNNs
 def model_train_seq(device,niter,optimizer,criterion,model,dataloaders,name="lstm"):
     trainloader, devloader = dataloaders
     print("Training RNN ...") #TODO, make a summary of model
@@ -191,7 +255,7 @@ def cal_diff(yy,y):
     f_neg = torch.sum(yy[mask]!=y[mask]).numpy() #num of false negative
     return t_pos,t_neg,f_pos,f_neg
 
-# -------- neural networks -----------
+# -------- neural network models -----------
 
 class LSTMNet(nn.Module):
     def __init__(self,dim_input,dim_output,dim_hidden,num_layers=1):
@@ -245,25 +309,3 @@ class ConvLSTM(nn.Module):
         seq_aff = self.affine(seq_deconv)
         padded_y = self.logits(seq_aff)
         return padded_y,last_hidden
-
-
-class transformer(nn.Module):
-    def __init__(self,d_model=512,nhead=8,nstack=6,d_ff=2048,dropout=0.1):
-        super(transformer,self).__init__()
-        self.dim_input = dim_input
-        self.dim_output = dim_output
-        self.transformer = nn.Transformer(d_model=d_model,nhead=nhead,
-            num_encoder_layers=nstack, num_decoder_layers=nstack,
-            dim_feedforward=d_ff,dropout=dropout) #TODO: we use default parameters so far
-    def forward(self,src,tgt,src_mask=None, tgt_mask=None,
-                memory_mask=None, src_key_padding_mask=None,
-                tgt_key_padding_mask=None, memory_key_padding_mask=None):
-        return self.transformer(src,tgt,src_mask,tgt_mask,memory_mask,
-                                src_key_padding_mask,tgt_key_padding_mask,
-                                memory_key_padding_mask)
-    #TODO: Need to think about what is the target sequence(***)
-    #Should we include a <BOS> <EOS> token?
-    #Think about how to modify last layer instead of a vocab size
-
-#misc
-

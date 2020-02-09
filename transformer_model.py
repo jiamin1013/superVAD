@@ -20,7 +20,7 @@ class LayerNorm(nn.Module):
     def __init__(self,layer_size,eps=1e-6):
         super(LayerNorm,self).__init__()
         self.layer_size = layer_size
-        self.gain = nn.Parameter(torch.ones(layer_size)) 
+        self.gain = nn.Parameter(torch.ones(layer_size))
         self.bias = nn.Parameter(torch.zeros(layer_size))
         self.eps = eps
 
@@ -34,8 +34,8 @@ class Generator(nn.Module):
     def __init__(self,d_model,d_out):
         super(Generator,self).__init__()
         self.proj = nn.Linear(d_model,d_out)
-        self.logsftmx = nn.LogSoftmax(dim=2) #the 3rd dim is embedding size
-    
+        self.logsftmx = nn.LogSoftmax(dim=2) #the 3rd dim is embedding size 
+
     def forward(self,x):
         return self.logsftmx(self.proj(x))
 
@@ -48,7 +48,7 @@ class EncoderDecoder(nn.Module):
         self.tgt_embed = tgt_embed #learn category to embeddings mapping
         self.pe = position_encode #positional encoding
         self.generator = generator #map embed space to category distribution
-        
+
     def forward(self, src, tgt, src_mask=None, tgt_mask=None, 
                 memory_mask=None, src_key_padding_mask=None,
                 tgt_key_padding_mask=None, memory_key_padding_mask=None):
@@ -66,11 +66,11 @@ class EncoderDecoder(nn.Module):
         memory = self.encode(src, src_mask, src_key_padding_mask)
         out,_ = self.decode(tgt, memory, tgt_mask, memory_mask, tgt_key_padding_mask, memory_key_padding_mask)
         return self.generator(out)
-    
+
     def encode(self, src, src_mask=None, src_key_padding_mask=None):
         src2 = self.pe(src)
         return self.encoder(src2, src_mask, src_key_padding_mask)
-    
+
     def decode(self, tgt, memory, tgt_mask=None, memory_mask=None, tgt_key_padding_mask=None, memory_key_padding_mask=None):
         tgt2 = self.pe(self.tgt_embed(tgt))
         return self.decoder(tgt2, memory, tgt_mask, memory_mask, tgt_key_padding_mask, memory_key_padding_mask)
@@ -78,11 +78,11 @@ class EncoderDecoder(nn.Module):
     def greedy_decode(self, memory, start_symbol, max_len,
                       memory_mask=None, memory_key_padding_mask=None):
         ys = torch.zeros((max_len,1),dtype=torch.long)
-        ys_mask = self.generate_square_subsequent_mask(ys.size(0))
+        ys_mask = generate_square_subsequent_mask(ys.size(0))
         next_ys = start_symbol
         atnw = []
         for i in range(max_len-1):
-            ys[i,0] = next_ys 
+            ys[i,0] = next_ys
             out,atw = self.decode(ys,memory,ys_mask,memory_mask,None,memory_key_padding_mask)
             prob = self.generator(out)[i,:,:]
             next_ys = torch.exp(prob.detach()).argmax(dim=1)#.unsqueeze(0)
@@ -104,32 +104,32 @@ class Encoder(nn.Module):
         #self.layers is a list of attn+FF sublayers
         self.encoder_layers = clone(encoder_layer,N)
         self.num_layers = N
-        self.norm = norm 
+        self.norm = norm
 
     def forward(self,src,src_mask=None, src_key_padding_mask=None):
         #pass the input (and mask) through each layer
         output = src
         for i in range(self.num_layers):
             output = self.encoder_layers[i](output,src_mask=src_mask,
-                                 src_key_padding_mask=src_key_padding_mask) 
+                                 src_key_padding_mask=src_key_padding_mask)
         if self.norm:
             output = self.norm(output)
 
         return output
 
-class EncoderLayer(nn.Module): 
+class EncoderLayer(nn.Module):
     def __init__(self,d_model,nhead,d_ff=2048,dropout=0.1):
         super(EncoderLayer, self).__init__()
         self.self_attn = MultiheadAttention(d_model,nhead,dropout=dropout)
         #Position-wise Feedfoward model (each vector passes thru ff)
         self.linear1 = nn.Linear(d_model,d_ff)
-        self.dropout = nn.Dropout(dropout) 
+        self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(d_ff,d_model)
         self.norm1 = LayerNorm(d_model)
         self.norm2 = LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
-        self.size = d_model 
+        self.size = d_model
 
     def forward(self,src,src_mask=None,src_key_padding_mask=None):
         src2 = self.self_attn(src,src,src,attn_mask=src_mask,
@@ -152,7 +152,7 @@ class MultiheadAttention(nn.Module):
         return self.attn(query,key,value,
                          key_padding_mask=key_padding_mask,
                          attn_mask=attn_mask)
-   
+
 class Decoder(nn.Module):
     def __init__(self,decoder_layer,N,norm=None):
         super(Decoder,self).__init__()
@@ -219,7 +219,7 @@ class PositionalEncoding(nn.Module):
             pe[:,1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(1) #batch dimension
         self.register_buffer('pe',pe)
-    
+
     def forward(self,x):
         #x dim is SeqL, Batch, Embed
         #add positional encoding to embedding
@@ -235,6 +235,14 @@ class Embeddings(nn.Module):
     def forward(self, x):
         return self.emb(x) * math.sqrt(self.d_model)
 
+def generate_square_subsequent_mask(self,size):
+    #Mask out subsequent positions
+    attn_shape = np.empty([size,size])
+    attn_shape.fill(float('-inf'))
+    subsequent_mask = np.triu(attn_shape,k=1)
+    #Fills lower triangular with 0.0
+    return torch.as_tensor(subsequent_mask,dtype=torch.float32)
+
 def make_txmodel(d_model=512,d_out=4,nhead=8,nlayer=6,d_ff=2048,dropout=0.1):
     encoder = Encoder(EncoderLayer(d_model,nhead,d_ff,dropout),nlayer)
     decoder = Decoder(DecoderLayer(d_model,nhead,d_ff,dropout),nlayer)
@@ -246,18 +254,6 @@ def make_txmodel(d_model=512,d_out=4,nhead=8,nlayer=6,d_ff=2048,dropout=0.1):
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
     return model
-
-#TODO, fix following functions
-def train_tx_model(device,niter,optimizer,criterion,model,dataloaders,name="tx"):
-    trainloader, devloader = dataloaders
-    print("Training Transformer ...")
-    for epoch in range(niter):
-        print(epoch)
-        loss_sum = 0
-        for data in trainloader:
-            running_loss = 0
-            xseq,yseq,xlen,ylen = data
-            xseq,yseq = xseq.to(device=device),yseq.to(device=device)
 
 def lbl_to_tgtseq(lblseq,d_model,category=2):
     sz0,sz1 = lblseq.size()
@@ -275,7 +271,7 @@ def make_one_hot(lblseq,category=2):
     #assume lbl seq dim order (seqL,batch) 
     assert(lblseq.size()[1]<lblseq.size()[0])
     emb = nn.Embedding(category,category)
-    emb.weight.data = torch.eye(category,dtype=torch.float32) 
+    emb.weight.data = torch.eye(category,dtype=torch.float32)
     #this return a matrix of (seqL,batch,category_sz)
     return emb(lblseq).detach()
 
@@ -285,9 +281,9 @@ def pad_vec_dim(vec_in,d_model):
     if len(vec_in.size()) == 2:
         #some case our input label is (seqL,batch)
         vec_in = vec_in.unsqueeze(dim=2)
-    seq_sz,b_sz,embed_sz = vec_in.size() 
+    seq_sz,b_sz,embed_sz = vec_in.size()
     pad_sz = d_model - embed_sz
-    pad_vec = torch.zeros((seq_sz,b_sz,pad_sz)) 
+    pad_vec = torch.zeros((seq_sz,b_sz,pad_sz))
     vec_out = torch.cat((vec_in,pad_vec),dim=2).detach()
     return vec_out,pad_sz
 
@@ -303,27 +299,31 @@ def pad_bos_eos(seq_in,pad_sz=0):
     return new_seq
 
 #Note: Crossentropy loss does not require target sequence
-#to be embedding size, but class prediction can be onehot
+#to be one hot categorical, but class prediction can be onehot
 class LabelSmoothing(nn.Module):
-    #Perform label smoothing to obtain a continuous
-    #label distribution
-    def __init__(self, size, smoothing=0.0):
+    #Perform label smoothing to obtain a continuous label distribution
+    def __init__(self, size, smoothing=0.0,pad_val=-100):
         super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
-        #self.padding_idx = padding_idx
+        #KLDiv = sum_x P(x)*log(P(x)/Q(x)), note reduction = batchmean,
+        #which sums up rest of dimensions as support size and divide by batch size (1st dim) 
+        self.criterion = nn.KLDivLoss(reduction='batchmean')
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing
         self.size = size
+        self.padding_val = pad_val
         self.true_dist = None
-        
-    def forward(self, x, target):
-        assert x.size(1) == self.size
+
+    def forward(self, x, gold, padding_mask):
+        #gold is the truth label (seqL,bsz), x is (batch,class,seqL) 
+        gold_t = gold.transpose(0,1).contiguous()
+        assert x.size(1) == self.size 
+        assert x.size(0) == gold_t.size(0)
         true_dist = x.data.clone()
-        true_dist.fill_(self.smoothing / (self.size - 2))
-        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
-        true_dist[:, self.padding_idx] = 0
-        mask = torch.nonzero(target.data == self.padding_idx)
-        if mask.dim() > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+        #fill smoothed probability mass to non-hot values 
+        true_dist.fill_(self.smoothing / (self.size - 2)) #-1 if no bos, -2 if there is a bos
+        #scatter probability mass to hot values
+        true_dist.scatter_(1, gold_t.data.unsqueeze(1), self.confidence)
+        true_dist.masked_fill_(padding_mask.unsqueeze(1),0) #True value will be masked
+        true_dist.detach()
         self.true_dist = true_dist
         return self.criterion(x, Variable(true_dist, requires_grad=False))
